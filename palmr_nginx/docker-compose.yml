@@ -1,0 +1,161 @@
+#############################################################################################################################################################################
+# This is a minimal working example of running Palmr with HTTPS behind NGINX as a reverse proxy.                                                                            #
+# Do NOT change anything in this docker-compose file (except possibly the volume mounts for MinIO and Postgres).                                                            #
+# Generally, you only need to change the predefined variables in the .env file, which should be in the same folder as this docker-compose.yml file.                         #
+# Make sure that your domains are resolvable and point to the server where this Docker stack will run.                                                                      #
+#---------------------------------------------------------------------------------------------------------------------------------------------------------------------------#
+# Credits:                                                                                                                                                                  #
+#   Palmr by Kyantech (https://github.com/kyantech/palmr)                                                                                                                   #
+#   NGINX Reverse Proxy by nginx-proxy contributors (https://github.com/nginx-proxy/nginx-proxy)                                                                            #
+#   Let's Encrypt Companion by jrcs and contributors (https://github.com/nginx-proxy/acme-companion)                                                                        #
+#   Docker Compose example assembled by Charly (https://github.com/PunchEnergyFTW)
+#############################################################################################################################################################################
+services:
+  nginx:
+    container_name: nginx
+    image: nginxproxy/nginx-proxy
+    restart: unless-stopped
+    ports:
+        - 80:80
+        - 443:443
+    volumes:
+        - /var/run/docker.sock:/tmp/docker.sock:ro
+        - ./nginx/html:/usr/share/nginx/html
+        - ./nginx/certs:/etc/nginx/certs
+        - ./nginx/vhost:/etc/nginx/vhost.d
+        # Mountpoint to get client_max_body_size settings working
+        - ./nginx/conf.d:/etc/nginx/conf.d
+    logging:
+        options:
+            max-size: "10m"
+            max-file: "3"
+
+  letsencrypt-companion:
+    container_name: letsencrypt-companion
+    image: jrcs/letsencrypt-nginx-proxy-companion
+    restart: unless-stopped
+    volumes_from:
+        - nginx
+    volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+        - /var/docker/nginx/acme:/etc/acme.sh
+    environment:
+        DEFAULT_EMAIL: ${LETSENCRYPT_CONTACT_EMAIL}
+
+  palmr-api:
+    image: kyantech/palmr-api@sha256:7760e0d78c6822fe7e51dc13c194cabb4960330207742ec26506bf0c25d862be # Pinned to version which has been tested with this setup
+    container_name: palmr-api
+    depends_on:
+      postgres:
+        condition: "service_healthy"
+      minio:
+        condition: "service_healthy"
+    environment:
+      - PORT=${API_INTERNAL_PORT:-3333} # Port for the backend service
+      - DATABASE_URL=postgresql://postgres:${POSTGRESQL_PASSWORD:-postgresRootPassword}@postgres:5432/palmr_db?schema=public # Database URL with configurable password through POSTGRESQL_PASSWORD env var
+      - MINIO_ENDPOINT=${SERVER_IP:-localhost} # This can change if your MinIO is at a different address
+      - MINIO_PORT=${MINIO_INTERNAL_API_PORT:-6421} # Default MinIO port (Change if yours is not the default)
+      - MINIO_USE_SSL=true # MinIO uses SSL by default, but you can change it to true if needed
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minio_root_user} # MinIO credentials can be configured through MINIO_ROOT_USER env vars
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioRootPassword} # MinIO credentials can be configured through MINIO_ROOT_PASSWORD env vars
+      - MINIO_REGION=sa-east-1 # MinIO region - This is needed for MinIO to work properly
+      - MINIO_BUCKET_NAME=files # MinIO bucket name - This is needed for MinIO to work properly, dont change it if you don't know what you are doing
+      - FRONTEND_URL=${APP_URL:-http://${SERVER_IP:-localhost}:${APP_EXTERNAL_PORT:-5487} # Frontend URL - Make sure to use the correct frontend URL, depends on where the frontend is running, its prepared for localhost, but you can change it to your frontend URL if needed
+      - SERVER_IP=${SERVER_IP:-localhost} # Server IP - Make sure to use the correct server IP if you running on a cloud provider or a virtual machine. This prepared for localhost, but you can change it to your server IP if needed
+    expose:
+      - "${API_INTERNAL_PORT:-3333}" # Backend port mapping 
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${API_INTERNAL_PORT:-3333}/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  palmr-app:
+    image: kyantech/palmr-app@sha256:2b86b95b377c048b0320ea6c5c5bbeff884793defe4c542dc1f58497425f006f # Pinned to version which has been tested with this setup
+    container_name: palmr-web
+    depends_on:
+      palmr-api:
+        condition: "service_healthy"
+    expose:
+      - "${APP_EXTERNAL_PORT:-5487}" # Frontend port mapping
+    environment:
+      - NODE_ENV=production
+      - NEXT_TELEMETRY_DISABLED=1
+      - API_BASE_URL=http://palmr-api:${API_INTERNAL_PORT:-3333} # Here we use docker's internal network to reference the backend service (can be changed if needed)
+      ### NGINX Settings - Do not change unless you know what you're doing
+      - VIRTUAL_HOST=${NGINX_APP_URL} #WebURL for NGINX
+      - LETSENCRYPT_HOST=${NGINX_APP_URL} #WebURL for which Letsencrypt will generate a Certificate
+      - VIRTUAL_PORT=${APP_EXTERNAL_PORT:-5487}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5487"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  postgres:
+    image: bitnami/postgresql:17.2.0 # You can use any postgres version you prefer, but remember that some versions might not be compatible
+    container_name: palmr-postgres
+    environment:
+      # PostgreSQL credentials configurable through environment variables
+      # POSTGRESQL_USERNAME, POSTGRESQL_PASSWORD, and POSTGRES_DB can be set to override defaults
+      - POSTGRESQL_USERNAME=${POSTGRESQL_USERNAME:-postgres}
+      - POSTGRESQL_PASSWORD=${POSTGRESQL_PASSWORD:-postgresRootPassword}
+      - POSTGRESQL_DATABASE=${POSTGRES_DATABASE:-palmr_db}
+    volumes:
+      - postgres_data:/bitnami/postgresql
+    expose:
+      - "5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "palmr"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:RELEASE.2025-03-12T18-04-18Z # Use only version RELEASE.2025-03-12T18-04-18Z to avoid compatibility issues with the backend
+    container_name: minio
+    environment:
+      # MinIO credentials - same as above, configurable through environment variables
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minio_root_user}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioRootPassword}
+      - MINIO_SITE_REGION=sa-east-1
+      ### NGINX Settings - Do not change unless you know what you're doing
+      - VIRTUAL_HOST=${SERVER_IP} #WebURL for NGINX
+      - LETSENCRYPT_HOST=${SERVER_IP} #WebURL for which Letsencrypt will generate a Certificate
+      - VIRTUAL_PORT=${MINIO_INTERNAL_API_PORT:-6421}
+    command: server /data --address ":${MINIO_INTERNAL_API_PORT:-6421}" --console-address ":${MINIO_INTERNAL_CONSOLE_PORT:-6422}"
+    volumes:
+      - minio_data:/data
+    expose:
+      - "${MINIO_INTERNAL_API_PORT:-6421}"
+      - "${MINIO_INTERNAL_CONSOLE_PORT:-6422}"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${MINIO_INTERNAL_API_PORT:-6421}/minio/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-03-12T17-29-24Z # Use only version RELEASE.2025-03-12T17-29-24Z to avoid compatibility issues with the backend and MinIO
+    container_name: minio-init
+    depends_on:
+      minio:
+        condition: "service_healthy"
+    restart: "no"
+    # The entrypoint script will create a bucket called "files" and set it to be publicly readable using the MinIO client (mc).
+    entrypoint: >
+      sh -c "
+        sleep 5 &&
+        mc alias set myminio http://minio:${MINIO_INTERNAL_API_PORT:-6421} ${MINIO_ROOT_USER:-minio_root_user} ${MINIO_ROOT_PASSWORD:-minioRootPassword} &&
+        mc mb myminio/files --ignore-existing &&
+        mc anonymous set download myminio/files
+      "
+
+volumes:
+  minio_data:
+  postgres_data:
