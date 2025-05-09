@@ -30,7 +30,7 @@ This repository contains a minimal, production-ready example for deploying [Palm
     - After editing, restart the Traefik container for changes to take effect.
 
 - **Note:**
-    - *If you increase the Palmr `MAX_FILESIZE` limit - **MAKE SURE** that you at least match the size in the variable `TRAEFIK_MAX_BODY_SIZE
+    - If you increase the Palmr `MAX_FILESIZE` limit - **MAKE SURE** that you at least match the size in the variable `TRAEFIK_MAX_BODY_SIZE`
 
 ---
 
