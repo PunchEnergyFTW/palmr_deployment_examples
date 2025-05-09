@@ -60,7 +60,8 @@ services:
       - FRONTEND_URL=${APP_URL:-http://${SERVER_IP:-localhost}:${APP_EXTERNAL_PORT:-5487} # Frontend URL - Make sure to use the correct frontend URL, depends on where the frontend is running, its prepared for localhost, but you can change it to your frontend URL if needed
       - SERVER_IP=${SERVER_IP:-localhost} # Server IP - Make sure to use the correct server IP if you running on a cloud provider or a virtual machine. This prepared for localhost, but you can change it to your server IP if needed
       - MAX_FILESIZE=${MAX_FILESIZE:-1073741824} # Max Filesize for upload - Declared in Bytes. Default is 1GiB
-    expose: - "${API_INTERNAL_PORT:-3333}" # Backend port mapping 
+    expose: 
+      - "${API_INTERNAL_PORT:-3333}" # Backend port mapping 
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${API_INTERNAL_PORT:-3333}/health"]
